@@ -1,126 +1,99 @@
-import logging
-from pathlib import Path
-from typing import Dict, Optional
-from pypdf import PdfReader
-from pdf2image import convert_from_path
-from PIL.ImageQt import ImageQt
+import fitz
 from PyQt6.QtGui import QImage
+from PyQt6.QtCore import QRectF
+from typing import List, Tuple
+
 from .document import Document
-from ...utils.logging import get_logger, sanitize_for_log
+from ..selection.selection_model import CharMetadata
+
 
 class PdfParser(Document):
-    """
-    Handles both text extraction (via pypdf) and visual rendering (via pdf2image).
-    """
     def __init__(self):
-        self._logger = get_logger("PdfParser")
-        self._reader: Optional[PdfReader] = None
-        self._file_path: Optional[str] = None
-        self._page_count: int = 0
+        self._doc: fitz.Document | None = None
 
-    def load(self, file_path: str) -> None:
-        path = Path(file_path)
-        if not path.exists():
-            self._logger.error(f"File not found: {sanitize_for_log(file_path)}")
-            raise FileNotFoundError("File does not exist")
-        
+    def load(self, path: str):
+        """Loads a PDF file."""
         try:
-            self._reader = PdfReader(str(path))
-            self._file_path = str(path)
-            self._page_count = len(self._reader.pages)
-            self._logger.info(f"PDF loaded. Pages: {self._page_count}")
+            self._doc = fitz.open(path)
         except Exception as e:
-            self._logger.error(f"Failed to load PDF: {e}")
-            raise ValueError("Corrupt or unsupported PDF")
+            print(f"Error loading PDF: {e}")
+            self._doc = None
 
-    def get_metadata(self) -> Dict[str, str]:
-        if not self._reader:
-            return {}
-        
-        meta = self._reader.metadata
-        if not meta:
-            return {"title": "Unknown", "author": "Unknown"}
-        
-        return {
-            "title": meta.title or "Unknown",
-            "author": meta.author or "Unknown"
-        }
+    def close(self):
+        """Closes the document."""
+        if self._doc:
+            self._doc.close()
+            self._doc = None
+
+    def get_metadata(self) -> dict:
+        """Returns PDF metadata."""
+        return self._doc.metadata if self._doc else {}
 
     def get_page_count(self) -> int:
-        return self._page_count
+        """Returns the number of pages."""
+        return len(self._doc) if self._doc else 0
 
-    def get_page_size(self, page_index: int, zoom_level: int = 100) -> tuple[int, int]:
-        """
-        Returns page dimensions scaled by zoom level.
-        zoom_level: 50-400 (percentage)
-        """
-        if not self._reader:
-            return (0, 0)
-        
-        try:
-            box = self._reader.pages[page_index].mediabox
-            base_width = int(box.width)
-            base_height = int(box.height)
-            
-            # Apply zoom scaling
-            scale = zoom_level / 100.0
-            return (int(base_width * scale), int(base_height * scale))
-        except Exception:
-            return (0, 0)
+    def get_page_size(self, page_index: int, zoom_level: int = 100) -> Tuple[int, int]:
+        """Returns page size in pixels at the given zoom level."""
+        if not self._doc:
+            return 0, 0
+
+        page = self._doc[page_index]
+        scale = zoom_level / 100.0
+        return int(page.rect.width * scale), int(page.rect.height * scale)
 
     def get_page_text(self, page_index: int) -> str:
-        if not self._reader or page_index < 0 or page_index >= self._page_count:
+        """Returns raw page text."""
+        if not self._doc:
             return ""
-        
-        try:
-            page = self._reader.pages[page_index]
-            text = page.extract_text()
-            return text if text else ""
-        except Exception as e:
-            self._logger.warning(f"Failed to extract text from page {page_index}: {e}")
-            return ""
+        return self._doc[page_index].get_text()
 
-    def render_page(self, page_index: int, zoom_level: int = 100) -> Optional[QImage]:
-        """
-        Renders a specific page to a QImage at the specified zoom level.
-        
-        zoom_level: 50-400 (percentage)
-        - 100 = native resolution (72 DPI)
-        - 200 = 2x scaling (144 DPI)
-        - 50 = half resolution (36 DPI)
-        """
-        if not self._file_path:
-            return None
-        
-        try:
-            # Calculate DPI based on zoom
-            # Base DPI is 72, scale proportionally
-            target_dpi = int(72 * (zoom_level / 100.0))
-            
-            # Clamp DPI to reasonable bounds to prevent memory issues
-            # 36 DPI (50%) to 288 DPI (400%)
-            target_dpi = max(36, min(288, target_dpi))
-            
-            images = convert_from_path(
-                self._file_path,
-                first_page=page_index + 1,
-                last_page=page_index + 1,
-                dpi=target_dpi
-            )
-            
-            if not images:
-                return None
-            
-            pil_image = images[0]
-            if pil_image.mode != "RGB":
-                pil_image = pil_image.convert("RGB")
-            
-            return ImageQt(pil_image).copy()
-            
-        except Exception as e:
-            self._logger.error(f"Failed to render page {page_index} at {zoom_level}%: {e}")
+    def render_page(self, page_index: int, zoom_level: int = 100) -> QImage | None:
+        """Renders a page to a QImage."""
+        if not self._doc:
             return None
 
-    def close(self) -> None:
-        self._reader = None
-        self._file_path = None
+        page = self._doc[page_index]
+        scale = zoom_level / 100.0
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
+
+        img_format = (
+            QImage.Format.Format_RGB888
+            if pix.n == 3
+            else QImage.Format.Format_RGBA8888
+        )
+
+        qimg = QImage(
+            pix.samples,
+            pix.width,
+            pix.height,
+            pix.stride,
+            img_format,
+        )
+
+        return qimg.copy()
+
+    def get_character_map(self, page_index: int) -> List[CharMetadata]:
+        """Returns a list of characters with bounding boxes."""
+        if not self._doc:
+            return []
+
+        page = self._doc[page_index]
+        text_data = page.get_text("rawdict")
+
+        chars: List[CharMetadata] = []
+
+        for block in text_data["blocks"]:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    for char_info in span.get("chars", []):
+                        x0, y0, x1, y1 = char_info["bbox"]
+                        bbox = QRectF(x0, y0, x1 - x0, y1 - y0)
+                        chars.append(
+                            CharMetadata(
+                                char=char_info["c"],
+                                bbox=bbox,
+                            )
+                        )
+
+        return chars
