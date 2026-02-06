@@ -4,42 +4,15 @@ from .dictionary_adapter import DictionaryAdapter
 
 class FakeDictionary(DictionaryAdapter):
     """
-    T1.2: Dummy Dictionary with Structured Data.
+    T1.2: Fallback Dictionary.
+    Now strictly returns 'None' to allow the UI to show 'Lookup Failed' correctly,
+    instead of showing fake data that confuses the user.
     """
 
     def lookup(self, term: str) -> Optional[Dict[str, Any]]:
-        # Simulate I/O latency
-        time.sleep(0.3)
-        
-        clean_term = term.strip().lower()
-        
-        # Simulating a "Miss" for very short words
-        if len(clean_term) < 2:
-            return None
-
-        # Return STRUCTURED DATA (The fix)
-        return {
-            "word": term,
-            "phonetic": "/preiz/", # Dummy phonetic
-            "definitions": [
-                {
-                    "pos": "noun", 
-                    "text": "The expression of approval or admiration for someone or something."
-                },
-                {
-                    "pos": "verb", 
-                    "text": "To express warm approval or admiration of; to commend the worth of."
-                },
-                {
-                    "pos": "verb", 
-                    "text": "To glorify, especially by attribution of perfection; to worship or honor."
-                },
-                {
-                    "pos": "noun", 
-                    "text": "(Archaic) Value or merit."
-                }
-            ]
-        }
+        # Return None so the UI shows the "Lookup Failed" state
+        # instead of showing "Praise" for every missing word.
+        return None
 
     def close(self):
         pass
